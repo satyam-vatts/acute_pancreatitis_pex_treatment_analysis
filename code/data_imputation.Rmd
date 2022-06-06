@@ -1,0 +1,440 @@
+---
+output:
+  word_document: default
+  html_document: default
+---
+
+# Loading libraries
+
+```{r}
+library(readxl)
+library(ggplot2)
+library(mice)
+library(Amelia)
+library(missForest)
+```
+
+# Importing dataset
+```{r}
+vtc.df<-read_xlsx("APNotCleanedData.xlsm", sheet =1, na = c("","NA"))
+```
+
+
+#Filtered dataset
+```{r}
+vars_to_remove <- c(4,5,6,7,10,11,14,17,18,20,21,22,23,24,28,30,37,40,41,42,44,45,47,51,52,53,54,55,57,60,61,62,63,64,66,70,72,74,76,78,82,84,86,87,88,89,90,91,92,93,94,95,96,97,99,101,103,105,107,108,110,112,113,115,116,118,121,123,124,126,128,130,132,133,135,137,138,140,142,143,145,147,148,150,152,153,155,157,158,172,177,178,179,182,183,186,187)
+vtc.subset<- vtc.df[-vars_to_remove]
+```
+
+# Analysing Data
+```{r}
+summary(vtc.subset)
+```
+
+# Cleaning invalid values
+## Cleaning Hours Data
+```{r}
+unique(vtc.subset$dt_pex_sauvv)
+hour_clean <- function (data_val) {
+  hr_min <- data.frame("hr"=c(0), "mins"=c(0))
+  if (grepl('gio', data_val)) {hrs <- strcapture('gio ([[:digit:]]+).*', data_val,proto = data.frame(hr=integer()))
+  hr_min$hr<-hrs}
+  else {
+    if (grepl(',', data_val)){
+      hr_min <- strcapture("([[:digit:]]+), ?([[:digit:]]+)",
+                           data_val,
+                           proto = data.frame(hr=integer(), mins=integer()))
+      hr_min[is.na(hr_min)] <- 0
+    }
+    if (hr_min$hr == 0 && hr_min$mins == 0){
+        hr_min <- strcapture("([[:digit:]]+)h([[:digit:]]+).*",
+                           data_val,
+                           proto = data.frame(hr=integer(), mins=integer()))
+        hr_min[is.na(hr_min)] <- 0
+    }
+    
+    if (hr_min$hr == 0 && hr_min$mins == 0){
+      hr_min$hr <- as.numeric(data_val)
+    }
+  }
+  hrs <- as.numeric(hr_min$hr) + (as.numeric(hr_min$mins)/60)
+  return(hrs)
+}
+vtc.subset$dt_pex_sauvv <-as.numeric(lapply(vtc.subset$dt_pex_sauvv, hour_clean)) 
+unique(vtc.subset$dt_pex_sauvv)
+```
+# Cleaning Categorical Variables
+```{r}
+vtc.subset$ts_giadinh[is.na(vtc.subset$ts_giadinh)] <- 'khong'
+vtc.subset$ts_ruou[is.na(vtc.subset$ts_ruou)] <- 'Khong'
+vtc.subset$ts_ruou_nam[is.na(vtc.subset$ts_ruou_nam)] <- 0
+apply(vtc.subset[c('ts_dtd', 'ts_vtc','cls_sa_tuy_t0','cls_sa_mat_t0','cls_ct_dichob_lan1')], 2, unique)
+vtc.subset$ts_dtd[vtc.subset$ts_dtd=='3']<-'Khong'
+vtc.subset$ts_vtc[is.na(vtc.subset$ts_vtc) | vtc.subset$ts_vtc %in% c('3','5')]<-'Khong'
+vtc.subset$non[is.na(vtc.subset$non)] <- 0
+vtc.subset$cls_sa_tuy_t0 <- unlist(lapply(vtc.subset$cls_sa_tuy_t0, tolower))
+vtc.subset$cls_sa_tuy_t0[vtc.subset$cls_sa_tuy_t0 %in% c('vt man', 'han che tham kham', 'tang kt dua tuy', 'khong quan sat duoc', 'khong quan sat', 'kho qs', 'dich xa', 'kho thay')] <- 'khong'
+vtc.subset$cls_sa_tuy_t0[is.na(vtc.subset$cls_sa_tuy_t0)] <- 'khong'
+vtc.subset$cls_sa_dichob_t0[is.na(vtc.subset$cls_sa_dichob_t0)]<- 'Khong'
+vtc.subset$cls_sa_mat_t0[vtc.subset$cls_sa_mat_t0 %in% c('0', 'khong')] <- 'khong'
+vtc.subset$cls_sa_mat_t0[vtc.subset$cls_sa_mat_t0 %in% c('bt', 'polyp tu')] <- 'co'
+# Replacing 2 and dich tu do with khong as it is in cls_sa_dichob_t0 and replacing 'it' and 'Nhieu' with co as it has co in cls_sa_dichob_t0
+capt <- strcapture('(K|k)h.*', vtc.subset$cls_ct_dichob_lan1, proto = data.frame(resp=character()))
+vtc.subset$cls_ct_dichob_lan1[!is.na(capt$resp)] <- unlist(lapply(capt$resp[!is.na(capt$resp)], tolower))
+capt <- strcapture('(C|c).*', vtc.subset$cls_ct_dichob_lan1, proto = data.frame(resp=character()))
+vtc.subset$cls_ct_dichob_lan1[!is.na(capt$resp)] <- unlist(lapply(capt$resp[!is.na(capt$resp)], tolower))
+vtc.subset$cls_ct_dichob_lan1[vtc.subset$cls_ct_dichob_lan1 %in% c('k', '2', 'dich tu do')] <- 'khong'
+vtc.subset$cls_ct_dichob_lan1[vtc.subset$cls_ct_dichob_lan1 %in% c('c','it','Nhieu', 'day 50mm')] <- 'co'
+
+# levels(vtc.subset$kq)<- c(levels(vtc.subset$kq),1)
+vtc.subset$kq[vtc.subset$kq == 'Song']<- 1
+# vtc.subset$kq<-droplevels(vtc.subset$kq)  
+
+vtc.subset$pex[is.na(vtc.subset$pex)]<- 0
+vtc.subset$bcxa[is.na(vtc.subset$bcxa)] <- 0
+
+apply(vtc.subset[c('ts_dtd', 'ts_vtc','cls_sa_tuy_t0','cls_sa_mat_t0','cls_ct_dichob_lan1')], 2, unique)
+```
+kq - Replace song with '1', na values to be imputed using packages
+
+bcxa - no outliers, na values not possible to impute as pex treatment not done. Thus replacing NA with 0.
+
+pex - no outliers, replacing Na values with 0 as by analysing data we realized no pex treatment was done for those patients and we can find values for treatment variables
+
+## Factoring Categorical Variables
+```{r}
+cat_vars <- c(3,5,6,8,9,10,20,21,22,23,95,96,97)
+vtc.subset[cat_vars] <- lapply(vtc.subset[cat_vars], as.factor)
+```
+## Cleaning Numerical Variables
+
+### Summary of Numerical Variables
+```{r}
+summary(vtc.subset[-cat_vars])
+```
+### Boxplots of Numerical Variables
+```{r}
+for (i in 1:ncol(vtc.subset[-cat_vars])){
+  boxplot(unlist(vtc.subset[-cat_vars][,i]), xlab = colnames(vtc.subset[-cat_vars][,i]),main = paste("Boxplot of" , colnames(vtc.subset[-cat_vars][,i])),col = 'orange')
+}
+```
+## Observations and comments
+
+dt_pex_apache_t_lan1,dt_pex_apache_s_lan1 - within range 0 to 71 , hence no outliers, na values not possible to impute as pex treatment not done
+
+dt_pex_imrie_t_lan1,dt_pex_imrie_s_lan1 - within range 0 to 8, no outliers, na values not possible to impute as pex treatment not done
+
+dt_pex_sofa_t_lan1, dt_pex_sofa_s_lan1 -  within range 0 to 24, no outliers, na values not possible to impute as pex treatment not done
+
+dt_pex_alob_t_lan1,  dt_pex_alob_s_lan1 - within range, no outliers, na values not possible to impute as pex treatment not done
+
+
+
+- Negative balance fluid values are fine as fluid intake is more than fluid output.
+- dt_dich_bilan_t24 - 2 values greater than 10,000 (10700 and 23200). These values can be calculated by subtracting dt_dich_vao_t24 and dt_dich_ra_t24. It can be noticed there's an extra zero at end . The correct values should be 1070 and 2320.
+
+- dt_pex_chol_t_lan1 : 2 values out of range, replace them with NA as we dont have corresponding dt_pex_chol_s_lan1 for them( i.e cholestrol after pex ). Hence no analysis for chiolestrol levels can be done for these patients
+
+- dt_pex_ngaybenh -delete this variable as we already have dt_pex_sauvv
+
+- dt_pex_tri_t_lan1, dt_pex_tri_s_lan1 - no out of range values
+
+
+- delete dt_dich_vao and dt_dich_ra variables (70 to 75) as we already have calculated field of balance fluid
+
+- cls_km_pf_t0 - 2 out of range values for obs 18 and 70 (values 3.8 and 33.3). Value 33.3 is in KPA instead of mmHg so will convert it to mmHg. Value 3.8 is invalid hence replace by NA.
+
+-cls_km_be_t30, cls_km_be_t0  : base excess can have negative values , so no out of range values.
+
+
+- cls_km_hco3_t0, 
+1. value cannot be negative (-18.6), change to positive
+2. 77.6 is invalid value, hence replace with NA
+3. it seems 17.08 is misspelled as 1708 based on the value of HCO3 at t30 which is 18.6, so replace 1708 with 17.08
+
+
+- cls_km_hco3_t30
+ 
+1. value cannot be negative (-18.9), change to positive
+2. it seems 15.5 is misspelled as 155 based on the value of HCO3 at t0 which is 14.2, so replace 155 with 15.5
+
+
+- cls_km_pao2_t0,   cls_km_pao2_t30  no out of range values
+- cls_km_paco2_t0 - 97 is out of range value, seems like PaO2 value was filled   instead (as it is same in that column), replace with NA
+
+
+- cls_km_ph_t0 : out of range value 741 should be replaced with 7.41 as PH value lies in that range.
+
+- cls_sh_ka_t30 : Out of range values detected. Replace 137 with NA. Replae 33 with 3.3 as it seems it was misspelled based on cls_sh_ka_t0
+
+
+```{r}
+# BMI has an invalid value of 258.
+vtc.subset$ls_tt_bmi_t0[vtc.subset$ls_tt_bmi_t0 == 258] <-  25.8
+# Temperature has an invalid value of 366
+vtc.subset$ls_tn_nhiet_t0[vtc.subset$ls_tn_nhiet_t0 == 366] <-36.6
+# Percentage values
+vtc.subset$cls_hh_hct_t0[vtc.subset$cls_hh_hct_t0>1] <- NaN
+
+# SInce the values are increasing for later observations, there is an issue of decimal number which can be corrected like this. It also has a 879 value which doesn't has any future observations so replaced by NaN.
+vtc.subset$cls_hh_pt_t0[vtc.subset$cls_hh_pt_t0 == 565] <- 56.5
+vtc.subset$cls_hh_pt_t0[vtc.subset$cls_hh_pt_t0 > 150] <- NaN
+
+# Removed invalid value of more than 6k as it is out of range.
+vtc.subset$cls_hh_pt_t30[vtc.subset$cls_hh_pt_t30 > 150] <- NaN
+
+# Based on value at t0, this must have a decimal point error which is corrected below.
+vtc.subset$cls_hh_pt_t72[vtc.subset$cls_hh_pt_t72 == 0.98] <- 98
+# Since the outlier value is too high and there is NA for corresponding t30 value, we can not determine the error hence treat it as NA.
+vtc.subset$cls_hh_aptt_t0[vtc.subset$cls_hh_aptt_t0 > 5] <- NaN
+
+vtc.subset$cls_hh_fib_t0[vtc.subset$cls_hh_fib_t0 > 15] <- NaN
+
+# Decimal value issue as discoverd from t30 and t72 values
+vtc.subset$cls_sh_ure_t0[vtc.subset$cls_sh_ure_t0 == 193] <- 19.3
+
+#Creatinine levels are in micromoles per liter
+
+# The cholestrol values are also NA for after 30hrs for 99.
+vtc.subset$cls_sh_chol_t0[vtc.subset$cls_sh_chol_t0==99] <- NaN
+
+vtc.subset$cls_sh_na_t0[vtc.subset$cls_sh_na_t0 == 4.2] <- NA
+vtc.subset$cls_sh_na_t30[vtc.subset$cls_sh_na_t30 == 3.7] <- NA
+
+vtc.subset$cls_sh_ka_t30[vtc.subset$cls_sh_ka_t30 == 33]<- 3.3
+vtc.subset$cls_sh_ka_t30[vtc.subset$cls_sh_ka_t30 == 137] <- NA
+
+vtc.subset$cls_km_ph_t0[vtc.subset$cls_km_ph_t0 == 741]<- 7.41
+
+vtc.subset$cls_km_paco2_t0[vtc.subset$cls_km_paco2_t0 == 97]<- NA 
+
+vtc.subset$cls_km_hco3_t0[vtc.subset$cls_km_hco3_t0 == -18.6] <- 18.6
+vtc.subset$cls_km_hco3_t0[vtc.subset$cls_km_hco3_t0 == 77.6]<- NA
+vtc.subset$cls_km_hco3_t0[vtc.subset$cls_km_hco3_t0 == 1708] <- 17.08
+
+vtc.subset$cls_km_hco3_t30[vtc.subset$cls_km_hco3_t30 == -18.9] <- 18.9 
+vtc.subset$cls_km_hco3_t30[vtc.subset$cls_km_hco3_t30 == 155] <- 15.5
+
+vtc.subset$cls_km_pf_t0[vtc.subset$cls_km_pf_t0 == 3.8] <- NA
+vtc.subset$cls_km_pf_t0[vtc.subset$cls_km_pf_t0 == 33.3] <- 33.3 * 7.5
+
+vtc.subset$dt_dich_bilan_t24[vtc.subset$dt_dich_bilan_t24 == 10700] <- 1070
+vtc.subset$dt_dich_bilan_t24[vtc.subset$dt_dich_bilan_t24 == 23200] <- 2320
+
+vtc.subset$dt_pex_chol_t_lan1[vtc.subset$dt_pex_chol_t_lan1 == 99]<- NA
+vtc.subset$dt_pex_chol_t_lan1[vtc.subset$dt_pex_chol_t_lan1 == 135.13]<- NA
+```
+
+## Deleting Variables:
+```{r}
+#Remove Albumin as covered in IMRIE Score
+vtc.clean = subset(vtc.subset, select = -c(dt_pex_ngaybenh,dt_dich_vao_t24,dt_dich_vao_t48,dt_dich_vao_t72,dt_dich_ra_t24,dt_dich_ra_t48,dt_dich_ra_t72,cls_sh_alb_t0))
+```
+
+## Analysing Final Cleaned Dataset
+```{r}
+clean_cat_vars<-c(3,5,6,8,9,10,20,21,22,23,87,88,89)
+summary(vtc.clean)
+```
+```{r}
+for (i in 1:ncol(vtc.clean[-clean_cat_vars])){
+  boxplot(unlist(vtc.clean[-clean_cat_vars][,i]), xlab = colnames(vtc.clean[-clean_cat_vars][,i]),main = paste("Boxplot of" , colnames(vtc.clean[-clean_cat_vars][,i])),col = 'orange')
+}
+apply(vtc.clean[clean_cat_vars],2,unique)
+```
+
+```{r}
+
+```
+# Imputing Missing Data
+
+## MICE Imputation:
+### Step 1: Check percentage of missing data and remove columns with higher than 50% missing data from imputations 
+```{r}
+p_missing <- unlist(lapply(vtc.clean, function(x) sum(is.na(x))))/nrow(vtc.clean)
+sort(p_missing[p_missing > 0], decreasing = TRUE)
+```
+### Step 2: Modify the prediction matrix and imputation methods based on type and data of variables
+```{r}
+
+vars_miss_more_50 <- c('cls_sh_chol_t30','cls_km_pf_t30',
+                       'dt_pex_chol_s_lan1','dt_pex_alob_s_lan1',
+                       'cls_km_lac_t30','dt_pex_alob_t_lan1',
+                       'cls_hh_pt_t72','cls_km_be_t30',
+                       'cls_km_paco2_t30','cls_km_pao2_t30',
+                       'cls_km_ph_t30','cls_km_hco3_t30',
+                       'dt_pex_chol_t_lan1','cls_hh_bc_t54',
+                       'cls_sh_tri_t30','cls_hh_hct_t72',
+                       'cls_hh_bc_t72','cls_sh_ure_t72',
+                       'dt_pex_sofa_s_lan1','cls_hh_pt_t30',
+                       'cls_hh_aptt_t30','dt_pex_sauvv',
+                       'cls_hh_fib_t30','dt_pex_imrie_s_lan1',
+                       'bcxa','dt_pex_tri_s_lan1',
+                       'dt_pex_apache_s_lan1','cls_sa_mat_t0',
+                       'dt_pex_tri_t_lan1','dt_pex_apache_t_lan1',
+                       'dt_pex_imrie_t_lan1')
+
+mice_imp <- mice(vtc.clean, maxit=0)
+pred_mat <- mice_imp$predictorMatrix
+pred_meth <- mice_imp$method
+
+pred_mat[,c('ID')]<-0
+pred_mat[,vars_miss_more_50]<-0
+
+#Binary Variables
+bin_vars <- c('Gender','ts_giadinh','ts_ruou','ts_dtd','ts_vtc','non', 'cls_sa_dichob_t0', 'cls_sa_mat_t0','cls_ct_dichob_lan1','kq','bcxa','pex')
+
+#Unordered Categorical Variable
+uno_cat <- c('cls_sa_tuy_t0')
+pred_meth[bin_vars] <- "logreg"
+pred_meth[uno_cat] <- "polyreg"
+pred_meth
+```
+### Step 3: Apply MICE imputation on the cleaned dataset
+```{r}
+mice_imp_final <- mice(vtc.clean, maxit = 5, 
+                       predictorMatrix = pred_mat, 
+                       method = pred_meth, print =  FALSE)
+summary(mice_imp_final)
+```
+### Step 4: Extract imputed datasets from mice object
+```{r}
+mice_imp_vtc1 <- mice::complete(mice_imp_final,1)
+mice_imp_vtc2 <- mice::complete(mice_imp_final,2)
+mice_imp_vtc3 <- mice::complete(mice_imp_final,3)
+mice_imp_vtc4 <- mice::complete(mice_imp_final,4)
+mice_imp_vtc5 <- mice::complete(mice_imp_final,5)
+```
+## Pooled Regression
+# ```{r}
+# fitimp <- with(anesimp_long_mids,
+#                lm(ft_hclinton ~ manuf + pid_x +
+#                     patriot_amident + china_econ + LogMANO))
+# 
+# summary(pool(fitimp))
+# ```
+
+## Amelia Imputation
+### Step 1: Apply Amelia Imputation using ID as idvars, categorical variables as noms and empri as 8% of number of observations 
+```{r}
+amelia_imp <- amelia(as.data.frame(vtc.clean[-c(20)]),m=5,
+                     p2s=1,frontend = FALSE,
+                     idvars = c("ID"),noms = c('Gender','ts_giadinh','ts_ruou','ts_dtd','ts_vtc','non','cls_sa_dichob_t0','cls_sa_mat_t0','cls_ct_dichob_lan1','kq','bcxa', 'pex'),empri = 0.08*nrow(vtc.clean[-c(20)]))
+
+```
+
+### Step 2: Extract imputation results from Amelia Object
+```{r}
+amelia_imp_vtc1<-amelia_imp$imputations[[1]]
+amelia_imp_vtc2<-amelia_imp$imputations[[2]]
+amelia_imp_vtc3<-amelia_imp$imputations[[3]]
+amelia_imp_vtc4<-amelia_imp$imputations[[4]]
+amelia_imp_vtc5<-amelia_imp$imputations[[5]]
+
+```
+
+## missForest Imputation
+```{r}
+missfor_imp <- missForest(as.data.frame(vtc.clean), variablewise = TRUE)
+missfor_imp_vtc1 <- missfor_imp$ximp
+```
+### Checking results of imputation
+```{r}
+for (i in 1:ncol(vtc.clean)){
+  print(paste(colnames(vtc.clean[,i]), " - ", names(missfor_imp$OOBerror[i]), ":" ,round(missfor_imp$OOBerror[i],4)))
+}
+```
+
+### Comparing the imputed datasets
+
+```{r}
+for (i in 1:ncol(vtc.clean)){
+  if (sum(is.na(vtc.clean[,i]))>0){
+  print(summary(cbind(vtc.clean[,i],mice_imp_vtc1[,i],mice_imp_vtc2[,i],mice_imp_vtc3[,i],mice_imp_vtc4[,i],mice_imp_vtc5[,i],amelia_imp_vtc1[,i],amelia_imp_vtc2[,i],amelia_imp_vtc3[,i],amelia_imp_vtc4[,i],amelia_imp_vtc5[,i],missfor_imp_vtc1[,i])))
+  }
+}
+```
+
+```{r}
+for (i in 1:ncol(vtc.clean[-clean_cat_vars])){
+  hist(unlist(vtc.clean[-clean_cat_vars][,i]), xlab = colnames(vtc.clean[-clean_cat_vars][,i]),main = paste("Histogram of" , colnames(vtc.clean[-clean_cat_vars][,i])),col = 'orange')
+}
+```
+## Regression Modelling
+```{r}
+
+cor(as.data.frame(vtc.clean))
+```
+
+###Exporting Datasets
+
+```{r}
+write.csv(mice_imp_vtc3, file="mice_imputed.csv")
+write.csv(amelia_imp_vtc1, file="amelia_imputed.csv")
+write.csv(missfor_imp_vtc1, file="missforest_imputed.csv")
+
+```
+
+```{r}
+require(caTools)
+ 
+set.seed(101)
+sample_mice <- sample.split(mice_imp_vtc3$kq, SplitRatio = .8)
+sample_amelia <- sample.split(amelia_imp_vtc1$kq, SplitRatio = .8)
+sample_missfor <- sample.split(missfor_imp_vtc1$kq, SplitRatio = .8)
+
+train_mice <- subset(mice_imp_vtc3[-c(1,45,20)], sample_mice == TRUE)
+test_mice <- subset(mice_imp_vtc3[-c(1,45,20)], sample_mice == FALSE)
+
+train_amelia <- subset(amelia_imp_vtc1[-c(1)], sample_amelia == TRUE)
+test_amelia <- subset(amelia_imp_vtc1[-c(1)], sample_amelia == FALSE)
+
+train_missfor <- subset(missfor_imp_vtc1[-c(1,20)], sample_missfor == TRUE)
+test_missfor <- subset(missfor_imp_vtc1[-c(1,20)], sample_missfor == FALSE)
+
+mice_model <- glm(kq~., data=train_mice, family = binomial, maxit=100)
+amelia_model <- glm(kq~., data=train_amelia, family = binomial, maxit=100)
+missfor_model <- glm(kq~., data=train_missfor, family = binomial, maxit=100)
+```
+
+```{r}
+summary(mice_model)
+```
+```{r}
+summary(amelia_model)
+```
+```{r}
+summary(missfor_model)
+```
+#Predict The probabilities
+```{r}
+library(dplyr)
+mice_probabilities <- mice_model %>% predict(test_mice, type = "response")
+head(mice_probabilities)
+amelia_probabilities <- amelia_model %>% predict(test_amelia, type = "response")
+head(amelia_probabilities)
+missfor_probabilities <- missfor_model %>% predict(test_missfor, type = "response")
+head(missfor_probabilities)
+```
+#Checking Dummy Coding
+```{r}
+contrasts(test_mice$kq)
+contrasts(test_amelia$kq)
+contrasts(test_missfor$kq)
+```
+#Predict Class of Individual
+```{r}
+mice_pred.classes <- ifelse(mice_probabilities > 0.5, 1, 0)
+head(mice_pred.classes)
+amelia_pred.classes <- ifelse(amelia_probabilities > 0.5, 1, 0)
+head(amelia_pred.classes)
+missfor_pred.classes <- ifelse(missfor_probabilities > 0.5, 1, 0)
+head(missfor_pred.classes)
+```
+# Model Accuracy
+```{r}
+mean(mice_pred.classes == test_mice$kq)
+mean(amelia_pred.classes == test_amelia$kq)
+mean(missfor_pred.classes == test_missfor$kq)
+```
+\
